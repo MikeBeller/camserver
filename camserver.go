@@ -4,25 +4,57 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	_ "os"
+	"os"
+	"os/exec"
 	"time"
 )
 
 const tempFilePath = "/tmp/tmp_image.jpg"
 const imageFilePath = "/tmp/image.jpg"
+const errorImageFilePath = "/tmp/error_image.jpg"
+const minimumPhotoInterval = 10 * time.Second
 
 var photoRequests = make(chan int)
 var photoResponses = make(chan string)
 
+func takePicture() (string, error) {
+	// Need to include a throttle that checks age of file and
+	// doesn't retake if it's less than minimumPhotoInterval old
+	cmd := exec.Command("raspistill", "-o", tempFilePath)
+	_, err := cmd.StdoutPipe()
+	if err != nil {
+		return "", err
+	}
+	err = cmd.Start()
+	if err != nil {
+		return "", err
+	}
+	err = cmd.Wait()
+	if err != nil {
+		return "", err
+	}
+
+	err = os.Rename(tempFilePath, imageFilePath)
+	if err != nil {
+		return "", err
+	}
+	return imageFilePath, nil
+}
+
 func photographer() {
 	for {
 		<-photoRequests
-		time.Sleep(time.Second * 5)
-		photoResponses <- imageFilePath
+		path, err := takePicture()
+		if err != nil {
+			log.Println("Error taking picture: ", err)
+			photoResponses <- errorImageFilePath
+		}
+
+		photoResponses <- path
 	}
 }
 
-func takePic() string {
+func getPicFromPhotographer() string {
 	photoRequests <- 1
 	resp := <-photoResponses
 	return resp
@@ -34,7 +66,7 @@ func timeHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func camHandler(w http.ResponseWriter, r *http.Request) {
-	filePath := takePic()
+	filePath := getPicFromPhotographer()
 	http.ServeFile(w, r, filePath)
 }
 
