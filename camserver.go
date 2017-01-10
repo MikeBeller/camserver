@@ -17,40 +17,53 @@ const minimumPhotoInterval = 10 * time.Second
 var photoRequests = make(chan int)
 var photoResponses = make(chan string)
 
-func takePicture() (string, error) {
-	// Need to include a throttle that checks age of file and
-	// doesn't retake if it's less than minimumPhotoInterval old
-	cmd := exec.Command("raspistill", "-o", tempFilePath)
+func takePicture(path string) error {
+	cmd := exec.Command("raspistill", "-o", path)
 	_, err := cmd.StdoutPipe()
 	if err != nil {
-		return "", err
+		return err
 	}
 	err = cmd.Start()
 	if err != nil {
-		return "", err
+		return err
 	}
 	err = cmd.Wait()
 	if err != nil {
-		return "", err
+		return err
 	}
 
 	err = os.Rename(tempFilePath, imageFilePath)
 	if err != nil {
-		return "", err
+		return err
 	}
-	return imageFilePath, nil
+	return nil
 }
 
 func photographer() {
 	for {
 		<-photoRequests
-		path, err := takePicture()
-		if err != nil {
-			log.Println("Error taking picture: ", err)
-			photoResponses <- errorImageFilePath
+		// If there is a very recent photo, just return it
+		fi, err := os.Stat(imageFilePath)
+		if err == nil && time.Since(fi.ModTime()) < minimumPhotoInterval {
+			photoResponses <- imageFilePath
+			continue
 		}
 
-		photoResponses <- path
+		// Else take a new one into a temp file
+		if err := takePicture(tempFilePath); err != nil {
+			log.Println("Error taking picture: ", err)
+			photoResponses <- errorImageFilePath
+			continue
+		}
+
+		// Rename the temp file to the image file (unix atomic replace)
+		if err := os.Rename(tempFilePath, imageFilePath); err != nil {
+			log.Println("Error renaming temp file: ", err)
+			photoResponses <- errorImageFilePath
+			continue
+		}
+
+		photoResponses <- imageFilePath
 	}
 }
 
